@@ -11,6 +11,8 @@ type Chunk struct {
 type InitArgs struct {
 	Chunk      Chunk
 	IsToroidal bool
+	NeighborTop    string
+	NeighborBottom string
 }
 type InitReply struct{ Ok bool }
 

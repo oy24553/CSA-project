@@ -47,7 +47,14 @@ func (b *Broker) Run(args RunArgs, reply *RunReply) error {
 
 	chunks := splitBoardRows(board, len(clients))
 	for i, cli := range clients {
-		args := InitArgs{Chunk: chunks[i], IsToroidal: true}
+		topIdx := (i - 1 + len(clients)) % len(clients)
+		botIdx := (i + 1) % len(clients)
+		args := InitArgs{
+			Chunk:         chunks[i],
+			IsToroidal:    true,
+			NeighborTop:    addrs[topIdx],
+			NeighborBottom: addrs[botIdx],
+		}
 		var rep InitReply
 		if err := cli.Call("Worker.Init", &args, &rep); err != nil || !rep.Ok {
 			panic(fmt.Sprintf("Init worker %d failed: %v", i, err))
@@ -60,6 +67,7 @@ func (b *Broker) Run(args RunArgs, reply *RunReply) error {
 	b.turns = 0
 	b.mu.Unlock()
 
+	// Each worker will pull halo rows directly from its neighbours during Step.
 	const chunkTurns = 64
 	completed := 0
 	for completed < p.Turns {
@@ -70,33 +78,15 @@ func (b *Broker) Run(args RunArgs, reply *RunReply) error {
 		}
 
 		for t := 0; t < turns; t++ {
-			topRows := make([][]uint8, len(clients))
-			bottomRows := make([][]uint8, len(clients))
-
-			var wgGE sync.WaitGroup
-			wgGE.Add(len(clients))
-			for i, cli := range clients {
-				go func(i int, cli *rpc.Client) {
-					defer wgGE.Done()
-					var rep EdgesReply
-					if err := cli.Call("Worker.GetEdges", EdgesArgs{}, &rep); err == nil {
-						topRows[i], bottomRows[i] = rep.Top, rep.Bottom
-					}
-				}(i, cli)
-			}
-			wgGE.Wait()
-
 			var wgSt sync.WaitGroup
 			wgSt.Add(len(clients))
-			for i, cli := range clients {
-				go func(i int, cli *rpc.Client) {
+			for _, cli := range clients {
+				go func(cli *rpc.Client) {
 					defer wgSt.Done()
-					haloTop := bottomRows[(i-1+len(clients))%len(clients)]
-					haloBottom := topRows[(i+1)%len(clients)]
-					args := StepArgs{HaloTop: haloTop, HaloBottom: haloBottom}
+					args := StepArgs{} // halo will be fetched peer-to-peer
 					var rep StepReply
 					cli.Call("Worker.Step", args, &rep)
-				}(i, cli)
+				}(cli)
 			}
 			wgSt.Wait()
 		}

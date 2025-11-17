@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"sync"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 )
@@ -14,6 +15,12 @@ type Worker struct {
 	world [][]uint8
 	next  [][]uint8
 	torus bool
+
+	topAddr    string
+	bottomAddr string
+	topCli     *rpc.Client
+	bottomCli  *rpc.Client
+	once       sync.Once
 }
 
 func (w *Worker) Init(args *gol.InitArgs, rep *gol.InitReply) error {
@@ -21,6 +28,9 @@ func (w *Worker) Init(args *gol.InitArgs, rep *gol.InitReply) error {
 	w.world = clone2D(args.Chunk.Rows)
 	w.next = make2D(w.h, w.w)
 	w.torus = args.IsToroidal
+	w.topAddr = args.NeighborTop
+	w.bottomAddr = args.NeighborBottom
+	// defer dialing neighbours until first use
 	rep.Ok = true
 	return nil
 }
@@ -35,6 +45,32 @@ func (w *Worker) GetEdges(_ *gol.EdgesArgs, rep *gol.EdgesReply) error {
 }
 
 func (w *Worker) Step(args *gol.StepArgs, rep *gol.StepReply) error {
+	// Lazily dial neighbours once.
+	w.once.Do(func() {
+		if w.topAddr != "" {
+			if cli, err := rpc.Dial("tcp", w.topAddr); err == nil {
+				w.topCli = cli
+			}
+		}
+		if w.bottomAddr != "" {
+			if cli, err := rpc.Dial("tcp", w.bottomAddr); err == nil {
+				w.bottomCli = cli
+			}
+		}
+	})
+
+	haloTop := args.HaloTop
+	haloBottom := args.HaloBottom
+
+	// If neighbour connections exist, fetch halo rows directly from neighbours.
+	if w.topCli != nil && w.bottomCli != nil {
+		var topRep, botRep gol.EdgesReply
+		_ = w.topCli.Call("Worker.GetEdges", &gol.EdgesArgs{}, &topRep)
+		_ = w.bottomCli.Call("Worker.GetEdges", &gol.EdgesArgs{}, &botRep)
+		haloTop = topRep.Bottom // neighbour above bottom row
+		haloBottom = botRep.Top // neighbour below top row
+	}
+
 	for y := 0; y < w.h; y++ {
 		for x := 0; x < w.w; x++ {
 			alive := 0
@@ -47,9 +83,13 @@ func (w *Worker) Step(args *gol.StepArgs, rep *gol.StepReply) error {
 					nx := (x + dx + w.w) % w.w
 					var v uint8
 					if ny < 0 {
-						v = args.HaloTop[nx]
+						if len(haloTop) > 0 {
+							v = haloTop[nx]
+						}
 					} else if ny >= w.h {
-						v = args.HaloBottom[nx]
+						if len(haloBottom) > 0 {
+							v = haloBottom[nx]
+						}
 					} else {
 						v = w.world[ny][nx]
 					}
