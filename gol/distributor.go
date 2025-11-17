@@ -91,7 +91,7 @@ func distributor(p Params, c distributorChannels, control <-chan rune) {
 	quit := false
 	shutdown := false
 	completed := 0
-	aliveCount := 0
+	var aliveCount int
 
 	for !quit && !shutdown && completed < p.Turns {
 		select {
@@ -156,6 +156,7 @@ func distributor(p Params, c distributorChannels, control <-chan rune) {
 
 			c.events <- CellsFlipped{CompletedTurns: completed, Cells: frameCells}
 			c.events <- TurnComplete{CompletedTurns: completed}
+			c.events <- AliveCellsCount{CompletedTurns: completed, CellsCount: aliveCount}
 
 			atomic.StoreInt64(&latestCompleted, int64(completed))
 			atomic.StoreInt64(&latestAlive, int64(aliveCount))
